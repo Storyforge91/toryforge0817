@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "functions": {
+    "src/app/api/video/generate/route.ts": { "maxDuration": 300 },
+    "src/app/api/images/generate/route.ts": { "maxDuration": 180 },
+    "src/app/api/voice/generate/route.ts": { "maxDuration": 120 },
+    "src/app/api/cron/process-schedule/route.ts": { "maxDuration": 300 },
+    "src/app/api/ai/demo-pipeline/route.ts": { "maxDuration": 120 }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/process-schedule",
+      "schedule": "*/15 * * * *"
+    }
+  ]
+}
