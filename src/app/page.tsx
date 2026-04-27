@@ -14,7 +14,27 @@ export default function Home() {
           </p>
         </div>
 
-        <div className="grid w-full gap-5 sm:grid-cols-2">
+        <div className="grid w-full gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          {/* Hero Shot Reel */}
+          <Link
+            href="/demo"
+            className="group rounded-2xl border border-fuchsia-800/60 bg-zinc-950 p-6 transition-colors hover:border-fuchsia-500"
+          >
+            <span className="rounded-full bg-fuchsia-900/40 px-3 py-1 text-[10px] font-medium uppercase tracking-wider text-fuchsia-300">
+              Hero Shot
+            </span>
+            <h2 className="mt-3 text-2xl font-bold text-white">
+              Cinematic Hero Reels
+            </h2>
+            <p className="mt-2 text-sm text-zinc-400">
+              5–10s 9:16 reels with scale contrast and Pixar-quality lighting.
+              Built like @mister_z. Bring your own image or generate one.
+            </p>
+            <p className="mt-5 text-sm font-semibold text-fuchsia-400 group-hover:text-fuchsia-300">
+              Generate Hero Shot &rarr;
+            </p>
+          </Link>
+
           {/* Comedy Skits */}
           <Link
             href="/skits"
