@@ -113,8 +113,23 @@ export default function DemoPage() {
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  // Mode toggle: cinematic episodes vs 2D comedy skits
-  const [mode, setMode] = useState<"cinematic" | "skit">("cinematic");
+  // Mode toggle: cinematic episodes vs 2D comedy skits vs single hero-shot reel
+  const [mode, setMode] = useState<"cinematic" | "skit" | "hero-shot">(
+    "cinematic",
+  );
+
+  // Hero Shot config
+  const [heroScenarioSeed, setHeroScenarioSeed] = useState("");
+  const [heroThemeHint, setHeroThemeHint] = useState("mythic fantasy");
+  const [heroExternalImageUrl, setHeroExternalImageUrl] = useState("");
+
+  // Hero Shot pipeline outputs (any since the demo file already has a
+  // file-level eslint-disable for explicit-any in dynamic API responses)
+  const [heroShotData, setHeroShotData] = useState<any>(null);
+  const [heroImageUrl, setHeroImageUrl] = useState<string | null>(null);
+  const [heroVideoUrl, setHeroVideoUrl] = useState<string | null>(null);
+  const [heroVoiceUrl, setHeroVoiceUrl] = useState<string | null>(null);
+  const [heroProgress, setHeroProgress] = useState("");
 
   // Cinematic config
   const [genre, setGenre] = useState("dark-motivation");
@@ -936,6 +951,202 @@ export default function DemoPage() {
     window.speechSynthesis.speak(utterance);
   }
 
+  // ─────────────────────────────────────────────
+  // Hero Shot pipeline (Path 1 + Path 3)
+  //   1. Generate cinematic concept via Claude (mister_z formula)
+  //   2. Either generate the hero image OR use a user-provided URL
+  //   3. In parallel: animate via Kling/Wan + narrate via ElevenLabs
+  //   4. Show single video result
+  // ─────────────────────────────────────────────
+  async function runHeroShotPipeline() {
+    if (pipelineRunningRef.current) return;
+    pipelineRunningRef.current = true;
+
+    pipelineAbortRef.current?.abort();
+    pipelineAbortRef.current = new AbortController();
+
+    setError(null);
+    setHeroShotData(null);
+    setHeroImageUrl(null);
+    setHeroVideoUrl(null);
+    setHeroVoiceUrl(null);
+    setHeroProgress("");
+    setVoiceProgress("");
+    setVoiceQuotaExceeded(false);
+    setBrowserVoicePlaying(false);
+    if (typeof window !== "undefined") window.speechSynthesis?.cancel();
+
+    try {
+      // Step 1 — generate the cinematic concept
+      setStep("storyline");
+      setHeroProgress("Designing the shot...");
+      const conceptRes = await fetch("/api/ai/generate-hero-shot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scenarioSeed: heroScenarioSeed.trim() || undefined,
+          themeHint: heroThemeHint.trim() || undefined,
+        }),
+      });
+      if (!conceptRes.ok) {
+        const err = await conceptRes.json().catch(() => ({}));
+        throw new Error(err.error || `Hero shot concept failed (HTTP ${conceptRes.status})`);
+      }
+      const concept = await conceptRes.json();
+      setHeroShotData(concept);
+
+      // Step 2 — image: either generate or use the user-provided URL (Path 1)
+      setStep("images");
+      let imageUrl: string | null = null;
+      const externalUrl = heroExternalImageUrl.trim();
+      if (externalUrl) {
+        // Path 1: user pasted an image URL (e.g. from OpenArt). Skip generation.
+        if (!/^https?:\/\//.test(externalUrl)) {
+          throw new Error("External image URL must start with http:// or https://");
+        }
+        imageUrl = externalUrl;
+        setHeroImageUrl(externalUrl);
+        setHeroProgress("Using your image \u2014 skipping generation");
+      } else {
+        setHeroProgress("Generating hero frame (3D cinematic)...");
+        const imgRes = await fetch("/api/images/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: concept.imagePrompt,
+            width: 832,
+            height: 1472,
+            numImages: 1,
+            style: "3d-cinematic",
+          }),
+        });
+        if (!imgRes.ok) {
+          const err = await imgRes.json().catch(() => ({}));
+          throw new Error(err.error || `Image generation failed (HTTP ${imgRes.status})`);
+        }
+        const imgData = await imgRes.json();
+        imageUrl = imgData.imageUrls?.[0] || null;
+        if (!imageUrl) throw new Error("No image URL returned from generator");
+        setHeroImageUrl(imageUrl);
+      }
+
+      // Step 3 — animate + narrate in parallel
+      setStep("video");
+      setHeroProgress("Animating + narrating in parallel...");
+
+      const duration = Math.max(
+        1,
+        Math.min(10, Number(concept.duration) || 6),
+      );
+
+      const videoPromise = (async () => {
+        try {
+          const vidRes = await fetch("/api/video/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              imageUrl,
+              motionPrompt: concept.motionPrompt,
+              duration,
+              provider: "kling", // Kling is the strongest match for hero shots
+              animationStyle: "cinematic",
+              motionFluidity: "smooth",
+            }),
+          });
+          if (!vidRes.ok) {
+            const err = await vidRes.json().catch(() => ({}));
+            throw new Error(err.error || `Animation failed (HTTP ${vidRes.status})`);
+          }
+          const vidData = await vidRes.json();
+          if (vidData.videoUrl) {
+            setHeroVideoUrl(vidData.videoUrl);
+          }
+        } catch (err) {
+          console.error("Hero shot animation failed:", err);
+          setError(
+            err instanceof Error
+              ? `Animation: ${err.message}`
+              : "Animation failed",
+          );
+        }
+      })();
+
+      const voicePromise = (async () => {
+        const text = (concept.voiceScript || "").trim();
+        if (!text) return;
+        setVoiceProgress("Generating narration...");
+        try {
+          const voiceRes = await fetch("/api/voice/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text }),
+          });
+          if (voiceRes.ok) {
+            const data = await voiceRes.json();
+            setHeroVoiceUrl(data.audioUrl);
+            setVoiceProgress("Voice ready");
+          } else {
+            let errDetail = `HTTP ${voiceRes.status}`;
+            let isQuotaError = false;
+            try {
+              const errBody = await voiceRes.json();
+              errDetail = errBody.error || errDetail;
+              isQuotaError = errBody.quotaExceeded === true;
+            } catch {
+              /* ignore */
+            }
+            if (isQuotaError) {
+              setVoiceQuotaExceeded(true);
+              setVoiceProgress("Quota exceeded \u2014 browser voice available");
+            } else {
+              setVoiceProgress(`Voice failed: ${errDetail}`);
+            }
+          }
+        } catch (err) {
+          setVoiceProgress(
+            `Voice failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      })();
+
+      await Promise.allSettled([videoPromise, voicePromise]);
+
+      setHeroProgress("");
+      setStep("complete");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Hero shot pipeline failed");
+      setStep("idle");
+    } finally {
+      pipelineRunningRef.current = false;
+    }
+  }
+
+  function handleNewHeroShot() {
+    setHeroShotData(null);
+    setHeroImageUrl(null);
+    setHeroVideoUrl(null);
+    setHeroVoiceUrl(null);
+    setHeroProgress("");
+    setVoiceQuotaExceeded(false);
+    setBrowserVoicePlaying(false);
+    if (typeof window !== "undefined") window.speechSynthesis?.cancel();
+    setStep("idle");
+    setError(null);
+  }
+
+  function playHeroBrowserVoice() {
+    if (!heroShotData?.voiceScript) return;
+    const text = String(heroShotData.voiceScript).trim();
+    if (!text) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.95;
+    utterance.onend = () => setBrowserVoicePlaying(false);
+    utterance.onerror = () => setBrowserVoicePlaying(false);
+    setBrowserVoicePlaying(true);
+    window.speechSynthesis.speak(utterance);
+  }
+
   function handleNewSeries() {
     setStoryline(null);
     setEpisode(null);
@@ -1002,7 +1213,9 @@ export default function DemoPage() {
           <p className="mt-2 text-zinc-400">
             {mode === "cinematic"
               ? "One click. Full animated episode. Storyline, characters, scenes, animated video clips, voice narration, captions — all generated automatically."
-              : "One click. Full 2D comedy skit. Concept, beats, dialogue, scene images, animated clips, voice narration, captions — all generated automatically."}
+              : mode === "skit"
+                ? "One click. Full 2D comedy skit. Concept, beats, dialogue, scene images, animated clips, voice narration, captions — all generated automatically."
+                : "One click. Single cinematic hero-shot reel \u2014 the @mister_z / OpenArt aesthetic. Scale contrast, atmospheric depth, dramatic camera, mythic narration."}
           </p>
         </div>
 
@@ -1022,6 +1235,7 @@ export default function DemoPage() {
               setImageProgress("");
               setVideoErrors([]);
               setVideoSuccessCount(0);
+              setHeroProgress("");
               if (typeof window !== "undefined") window.speechSynthesis?.cancel();
             }}
             disabled={isRunning}
@@ -1047,6 +1261,7 @@ export default function DemoPage() {
               setImageProgress("");
               setVideoErrors([]);
               setVideoSuccessCount(0);
+              setHeroProgress("");
               if (typeof window !== "undefined") window.speechSynthesis?.cancel();
             }}
             disabled={isRunning}
@@ -1057,6 +1272,32 @@ export default function DemoPage() {
             }`}
           >
             2D Comedy Skit
+          </button>
+          <button
+            onClick={() => {
+              if (isRunning) return;
+              setMode("hero-shot");
+              setStep("idle");
+              setError(null);
+              setSaveError(null);
+              setVoiceQuotaExceeded(false);
+              setBrowserVoicePlaying(false);
+              setVoiceProgress("");
+              setVideoProgress("");
+              setImageProgress("");
+              setVideoErrors([]);
+              setVideoSuccessCount(0);
+              setHeroProgress("");
+              if (typeof window !== "undefined") window.speechSynthesis?.cancel();
+            }}
+            disabled={isRunning}
+            className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+              mode === "hero-shot"
+                ? "bg-white text-black"
+                : "text-zinc-400 hover:text-white"
+            }`}
+          >
+            Hero Shot Reel
           </button>
         </div>
 
@@ -2548,6 +2789,274 @@ export default function DemoPage() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* ═══════ HERO SHOT MODE ═══════ */}
+        {mode === "hero-shot" && step === "idle" && !heroShotData && (
+          <div className="mb-8 rounded-2xl border border-zinc-800 bg-zinc-950 p-6">
+            <h2 className="mb-4 text-lg font-semibold text-white">
+              Configure Your Hero Shot
+            </h2>
+            <p className="mb-5 text-xs text-zinc-500">
+              Single cinematic reel in the @mister_z / OpenArt aesthetic.
+              Scale contrast, atmospheric depth, dramatic camera, mythic narration.
+              Generates one shocking 5-10s clip.
+            </p>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <label className="mb-1 block text-sm text-zinc-400">
+                  Scenario seed (optional)
+                </label>
+                <textarea
+                  value={heroScenarioSeed}
+                  onChange={(e) => setHeroScenarioSeed(e.target.value)}
+                  rows={3}
+                  placeholder='e.g. "A child standing on a cliff facing a god made of storm clouds with glowing eyes" \u2014 leave blank for AI to invent something fresh'
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm text-white placeholder-zinc-600 outline-none focus:border-zinc-500"
+                />
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="mb-1 block text-sm text-zinc-400">
+                  Theme / aesthetic
+                </label>
+                <select
+                  value={heroThemeHint}
+                  onChange={(e) => setHeroThemeHint(e.target.value)}
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm text-white outline-none focus:border-zinc-500"
+                >
+                  <option value="mythic fantasy">Mythic Fantasy</option>
+                  <option value="cosmic horror">Cosmic Horror</option>
+                  <option value="post-apocalyptic">Post-Apocalyptic</option>
+                  <option value="epic superhero">Epic Superhero</option>
+                  <option value="dark sci-fi">Dark Sci-Fi</option>
+                  <option value="ancient civilization">Ancient Civilization</option>
+                  <option value="cyberpunk dystopia">Cyberpunk Dystopia</option>
+                  <option value="surreal dreamscape">Surreal Dreamscape</option>
+                  <option value="elemental forces of nature">
+                    Elemental Forces of Nature
+                  </option>
+                  <option value="biblical / spiritual">Biblical / Spiritual</option>
+                </select>
+              </div>
+
+              {/* Path 1 — Bring Your Own Image */}
+              <div className="sm:col-span-2 rounded-lg border border-violet-900/40 bg-violet-950/10 p-4">
+                <label className="mb-1 block text-sm font-medium text-violet-300">
+                  Use my own image URL <span className="text-zinc-500">(optional)</span>
+                </label>
+                <p className="mb-2 text-[11px] text-zinc-500">
+                  Paste a public image URL (e.g. from OpenArt, Midjourney, Krea).
+                  When provided, StoryForge skips image generation and animates
+                  YOUR image directly. Best results: 9:16 portrait, &gt;1024px,
+                  publicly accessible.
+                </p>
+                <input
+                  type="url"
+                  value={heroExternalImageUrl}
+                  onChange={(e) => setHeroExternalImageUrl(e.target.value)}
+                  placeholder="https://cdn.openart.ai/..."
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm text-white placeholder-zinc-600 outline-none focus:border-violet-500"
+                />
+              </div>
+            </div>
+
+            <button
+              onClick={runHeroShotPipeline}
+              className="mt-5 rounded-full bg-white px-8 py-3 text-sm font-bold text-black transition-colors hover:bg-zinc-200"
+            >
+              Generate Hero Shot Reel
+            </button>
+          </div>
+        )}
+
+        {/* HERO SHOT: completed actions */}
+        {mode === "hero-shot" && step === "complete" && heroShotData && (
+          <div className="mb-6 flex flex-wrap items-center gap-3 rounded-2xl border border-violet-900/50 bg-violet-950/20 p-5">
+            <button
+              onClick={() => {
+                handleNewHeroShot();
+                setTimeout(() => runHeroShotPipeline(), 0);
+              }}
+              className="rounded-full bg-white px-6 py-3 text-sm font-bold text-black transition-colors hover:bg-zinc-200"
+            >
+              Generate Another
+            </button>
+            <button
+              onClick={handleNewHeroShot}
+              className="rounded-full border border-zinc-700 px-6 py-3 text-sm font-medium text-zinc-300 transition-colors hover:border-zinc-500 hover:text-white"
+            >
+              Reset
+            </button>
+            <p className="text-[11px] text-zinc-500">
+              Right-click the video to download. Then post to Instagram / TikTok with the suggested caption below.
+            </p>
+          </div>
+        )}
+
+        {/* HERO SHOT: between-runs shortcut */}
+        {mode === "hero-shot" && step === "idle" && heroShotData && (
+          <div className="mb-8 flex items-center gap-4">
+            <button
+              onClick={() => {
+                handleNewHeroShot();
+                setTimeout(() => runHeroShotPipeline(), 0);
+              }}
+              className="rounded-full bg-white px-8 py-3 text-sm font-bold text-black transition-colors hover:bg-zinc-200"
+            >
+              Generate Another Hero Shot
+            </button>
+            <button
+              onClick={handleNewHeroShot}
+              className="rounded-full border border-zinc-700 px-6 py-3 text-sm font-medium text-zinc-300 transition-colors hover:border-zinc-500 hover:text-white"
+            >
+              Reset
+            </button>
+          </div>
+        )}
+
+        {/* HERO SHOT: output */}
+        {mode === "hero-shot" && heroShotData && (
+          <div className="space-y-6">
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-6">
+              <span className="rounded-full bg-violet-900/40 px-3 py-1 text-[10px] uppercase tracking-wider text-violet-300">
+                Hero Shot
+              </span>
+              <h3 className="mt-3 text-2xl font-bold text-white">
+                {heroShotData.title}
+              </h3>
+              <p className="mt-2 text-sm italic text-zinc-300">
+                &ldquo;{heroShotData.voiceScript}&rdquo;
+              </p>
+              <p className="mt-3 text-sm text-zinc-400">
+                {heroShotData.scenario}
+              </p>
+              {Array.isArray(heroShotData.themeTags) && heroShotData.themeTags.length > 0 && (
+                <div className="mt-4 flex flex-wrap gap-1.5">
+                  {heroShotData.themeTags.map((t: string, i: number) => (
+                    <span
+                      key={i}
+                      className="rounded-full bg-zinc-800 px-2.5 py-0.5 text-[10px] text-zinc-300"
+                    >
+                      #{t.replace(/^#/, "")}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Hero shot media — video if ready, image fallback while animating */}
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5">
+              <h3 className="mb-3 text-sm font-semibold text-zinc-300">
+                Preview
+              </h3>
+              <div className="mx-auto" style={{ maxWidth: 360 }}>
+                <div
+                  className="relative overflow-hidden rounded-xl bg-black"
+                  style={{ aspectRatio: "9/16" }}
+                >
+                  {heroVideoUrl ? (
+                    <video
+                      src={heroVideoUrl}
+                      controls
+                      autoPlay
+                      loop
+                      playsInline
+                      className="absolute inset-0 h-full w-full object-cover"
+                    />
+                  ) : heroImageUrl ? (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img
+                      src={heroImageUrl}
+                      alt={heroShotData.title}
+                      className="absolute inset-0 h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-xs text-zinc-600 animate-pulse">
+                      {heroProgress || "Working..."}
+                    </div>
+                  )}
+                </div>
+              </div>
+              {heroVideoUrl && (
+                <p className="mt-3 text-center text-[11px] text-zinc-500">
+                  Right-click the video and choose &ldquo;Save Video As&rdquo; to download.
+                </p>
+              )}
+            </div>
+
+            {/* Hero shot voice */}
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5">
+              <h3 className="mb-3 text-sm font-semibold text-zinc-300">
+                Voice Narration
+              </h3>
+              {heroVoiceUrl ? (
+                <div>
+                  <audio src={heroVoiceUrl} controls className="w-full" />
+                  <a
+                    href={heroVoiceUrl}
+                    download={`${(heroShotData.title || "hero-shot").replace(/\s+/g, "-")}-narration.mp3`}
+                    className="mt-2 inline-block text-xs text-zinc-400 underline hover:text-white"
+                  >
+                    Download MP3
+                  </a>
+                </div>
+              ) : voiceQuotaExceeded ? (
+                <div>
+                  <div className="mb-3 rounded-lg border border-amber-800/50 bg-amber-950/30 p-3">
+                    <p className="text-xs text-amber-400">
+                      ElevenLabs quota exceeded. Browser voice is available as a free fallback.
+                    </p>
+                  </div>
+                  <button
+                    onClick={
+                      browserVoicePlaying
+                        ? stopBrowserVoice
+                        : playHeroBrowserVoice
+                    }
+                    className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-black hover:bg-zinc-200"
+                  >
+                    {browserVoicePlaying
+                      ? "Stop Playback"
+                      : "Play with Browser Voice"}
+                  </button>
+                </div>
+              ) : (
+                <p className="text-xs text-zinc-600">
+                  {isRunning
+                    ? "Generating narration..."
+                    : "Voice generation skipped or failed"}
+                </p>
+              )}
+            </div>
+
+            {/* Suggested caption */}
+            <div className="rounded-2xl border border-violet-900/50 bg-violet-950/20 p-5">
+              <h3 className="mb-2 text-sm font-semibold text-violet-300">
+                Suggested Caption (Instagram / TikTok)
+              </h3>
+              <p className="text-sm italic text-zinc-200">
+                &ldquo;{heroShotData.voiceScript}&rdquo;
+              </p>
+              <p className="mt-3 text-xs text-zinc-400">
+                Comment <span className="font-mono text-violet-300">&ldquo;PROMPT&rdquo;</span> and I&apos;ll DM you the prompt that made this 👇
+              </p>
+              {Array.isArray(heroShotData.themeTags) && heroShotData.themeTags.length > 0 && (
+                <p className="mt-2 text-xs text-zinc-500">
+                  {heroShotData.themeTags
+                    .map((t: string) => `#${t.replace(/^#/, "").replace(/\s+/g, "")}`)
+                    .join(" ")}{" "}
+                  #aiart #aianimation #cinematic #ai
+                </p>
+              )}
+              <p className="mt-3 text-[11px] text-zinc-500">
+                The comment-bait CTA is the engagement multiplier behind viral
+                AI reels. Replace &ldquo;PROMPT&rdquo; with whatever DM keyword
+                fits your funnel.
+              </p>
+            </div>
           </div>
         )}
       </div>
