@@ -180,7 +180,17 @@ export async function POST(request: NextRequest) {
     const resolvedStyle: ImageStyle = isStyle(style) ? style : "anime";
     const styleConfig = STYLE_MODELS[resolvedStyle];
 
-    const fullPrompt = prompt + styleConfig.promptSuffix;
+    // Leonardo enforces a hard 1500-character cap on the prompt field. We
+    // append a style suffix below, so reserve room for it and trim the user
+    // prompt at a word boundary if needed before concatenation.
+    const LEONARDO_PROMPT_LIMIT = 1500;
+    const suffix = styleConfig.promptSuffix;
+    const maxBase = LEONARDO_PROMPT_LIMIT - suffix.length;
+    const trimmedBase =
+      prompt.length > maxBase
+        ? prompt.slice(0, maxBase).replace(/\s+\S*$/, "")
+        : prompt;
+    const fullPrompt = trimmedBase + suffix;
 
     // Build request body. If referenceImageIds is provided, attach them as
     // imagePrompts so Leonardo conditions the new image on the reference
