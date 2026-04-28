@@ -56,13 +56,44 @@ export async function generateHeroShotConcept(
     }),
   );
 
+  // Leonardo enforces a 1500-character limit on prompts.
+  const LEONARDO_PROMPT_LIMIT = 1500;
+
   // Refine: pick references against Claude's moodTags and re-steer the image
-  // prompt so Leonardo gets specific look notes.
+  // prompt so Leonardo gets specific look notes. We degrade gracefully:
+  //   1. Try base + 2 references.
+  //   2. If too long, try base + 1 reference.
+  //   3. If still too long, ship the base prompt alone and skip steering.
   const matched = pickReferencesForMood(concept.moodTags || [], 2);
   if (matched.length > 0) {
-    const refNotes = formatReferencesAsNotes(matched);
-    concept.imagePrompt = `${concept.imagePrompt}\n\nLOOK REFERENCES (steer the rendering toward these):\n${refNotes}`;
-    concept.appliedReferenceIds = matched.map((r) => r.id);
+    const buildPrompt = (refs: typeof matched) =>
+      `${concept.imagePrompt}\n\nLOOK REFERENCES (steer the rendering toward these):\n${formatReferencesAsNotes(refs)}`;
+
+    const candidates = [matched, matched.slice(0, 1)];
+    let appliedRefs: typeof matched = [];
+    let finalPrompt = concept.imagePrompt;
+    for (const refs of candidates) {
+      const candidate = buildPrompt(refs);
+      if (candidate.length <= LEONARDO_PROMPT_LIMIT) {
+        finalPrompt = candidate;
+        appliedRefs = refs;
+        break;
+      }
+    }
+    concept.imagePrompt = finalPrompt;
+    if (appliedRefs.length > 0) {
+      concept.appliedReferenceIds = appliedRefs.map((r) => r.id);
+    }
+  }
+
+  // Final safety net: if the base prompt itself somehow exceeds the limit
+  // (shouldn't happen with current Claude prompt instructions), trim with a
+  // word boundary so we don't break syntax mid-word.
+  if (concept.imagePrompt.length > LEONARDO_PROMPT_LIMIT) {
+    const truncated = concept.imagePrompt
+      .slice(0, LEONARDO_PROMPT_LIMIT)
+      .replace(/\s+\S*$/, "");
+    concept.imagePrompt = truncated;
   }
 
   // Lock duration to the series standard regardless of what the model returned.
