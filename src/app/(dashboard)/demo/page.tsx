@@ -129,6 +129,12 @@ export default function DemoPage() {
   const [heroImageUrl, setHeroImageUrl] = useState<string | null>(null);
   const [heroVideoUrl, setHeroVideoUrl] = useState<string | null>(null);
   const [heroProgress, setHeroProgress] = useState("");
+  const [heroError, setHeroError] = useState<{
+    message: string;
+    actionUrl?: string;
+    actionLabel?: string;
+  } | null>(null);
+  const [copiedField, setCopiedField] = useState<"text" | "music" | null>(null);
   // Locked Hero Shot duration — single-shot, 8s, 9:16. Series discipline.
   const HERO_SHOT_DURATION_SECONDS = 8;
 
@@ -967,6 +973,7 @@ export default function DemoPage() {
     pipelineAbortRef.current = new AbortController();
 
     setError(null);
+    setHeroError(null);
     setHeroShotData(null);
     setHeroImageUrl(null);
     setHeroVideoUrl(null);
@@ -986,6 +993,15 @@ export default function DemoPage() {
       });
       if (!conceptRes.ok) {
         const err = await conceptRes.json().catch(() => ({}));
+        // The route now returns { error, kind, actionUrl, actionLabel } on failure.
+        if (err && err.actionUrl) {
+          setHeroError({
+            message: err.error || `Hero shot concept failed (HTTP ${conceptRes.status})`,
+            actionUrl: err.actionUrl,
+            actionLabel: err.actionLabel,
+          });
+          throw new Error(err.error || "Hero shot concept failed");
+        }
         throw new Error(err.error || `Hero shot concept failed (HTTP ${conceptRes.status})`);
       }
       const concept = await conceptRes.json();
@@ -1063,7 +1079,16 @@ export default function DemoPage() {
       setHeroProgress("");
       setStep("complete");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Hero shot pipeline failed");
+      const msg = err instanceof Error ? err.message : "Hero shot pipeline failed";
+      // If we don't already have a structured heroError (from the route), set a plain one.
+      setHeroError((prev) =>
+        prev
+          ? prev
+          : {
+              message: msg,
+            },
+      );
+      setError(msg);
       setStep("idle");
     } finally {
       pipelineRunningRef.current = false;
@@ -1075,8 +1100,44 @@ export default function DemoPage() {
     setHeroImageUrl(null);
     setHeroVideoUrl(null);
     setHeroProgress("");
+    setHeroError(null);
+    setCopiedField(null);
     setStep("idle");
     setError(null);
+  }
+
+  async function copyToClipboard(text: string, field: "text" | "music") {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedField(field);
+      setTimeout(() => setCopiedField((current) => (current === field ? null : current)), 1500);
+    } catch {
+      // Clipboard API can fail in non-secure contexts; ignore.
+    }
+  }
+
+  async function downloadHeroVideo() {
+    if (!heroVideoUrl) return;
+    const filename = `${(heroShotData?.title || "hero-shot")
+      .toString()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")}.mp4`;
+    try {
+      const res = await fetch(heroVideoUrl);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      // Fall back to opening in a new tab if blob fetch is blocked by CORS.
+      window.open(heroVideoUrl, "_blank", "noopener");
+    }
   }
 
   function handleNewSeries() {
@@ -2725,6 +2786,37 @@ export default function DemoPage() {
         )}
 
         {/* ═══════ HERO SHOT MODE ═══════ */}
+        {mode === "hero-shot" && heroError && (
+          <div className="mb-6 rounded-2xl border border-red-900/60 bg-red-950/30 p-5">
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-red-900/60 text-xs font-bold text-red-200">
+                !
+              </span>
+              <div className="flex-1">
+                <p className="text-sm font-medium text-red-100">
+                  {heroError.message}
+                </p>
+                {heroError.actionUrl && heroError.actionLabel && (
+                  <a
+                    href={heroError.actionUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-3 inline-block rounded-full bg-white px-4 py-2 text-xs font-bold text-black transition-colors hover:bg-zinc-200"
+                  >
+                    {heroError.actionLabel} &rarr;
+                  </a>
+                )}
+              </div>
+              <button
+                onClick={() => setHeroError(null)}
+                className="text-xs text-red-300/60 hover:text-red-100"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
         {mode === "hero-shot" && step === "idle" && !heroShotData && (
           <div className="mb-8 rounded-2xl border border-zinc-800 bg-zinc-950 p-6">
             <h2 className="mb-4 text-lg font-semibold text-white">
@@ -2916,17 +3008,37 @@ export default function DemoPage() {
                 </div>
               </div>
               {heroVideoUrl && (
-                <p className="mt-3 text-center text-[11px] text-zinc-500">
-                  Right-click the video and choose &ldquo;Save Video As&rdquo; to download.
-                </p>
+                <div className="mt-4 flex flex-col items-center gap-2">
+                  <button
+                    onClick={downloadHeroVideo}
+                    className="rounded-full bg-white px-6 py-2 text-xs font-bold text-black transition-colors hover:bg-zinc-200"
+                  >
+                    Download Video (MP4)
+                  </button>
+                  <p className="text-[11px] text-zinc-500">
+                    Or right-click the video and choose &ldquo;Save Video As&rdquo;.
+                  </p>
+                </div>
               )}
             </div>
 
             {/* Hero shot — on-screen text overlay (CapCut-ready) */}
             <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5">
-              <h3 className="mb-2 text-sm font-semibold text-zinc-300">
-                On-Screen Text Overlay
-              </h3>
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-zinc-300">
+                  On-Screen Text Overlay
+                </h3>
+                {heroShotData.textOverlay && (
+                  <button
+                    onClick={() =>
+                      copyToClipboard(heroShotData.textOverlay, "text")
+                    }
+                    className="rounded-full border border-zinc-700 px-3 py-1 text-[11px] font-medium text-zinc-300 transition-colors hover:border-zinc-500 hover:text-white"
+                  >
+                    {copiedField === "text" ? "Copied" : "Copy"}
+                  </button>
+                )}
+              </div>
               <p className="text-2xl font-bold text-white">
                 {heroShotData.textOverlay || "—"}
               </p>
@@ -2937,18 +3049,30 @@ export default function DemoPage() {
               </p>
             </div>
 
-            {/* Hero shot \u2014 music vibe (creator picks the track in CapCut) */}
+            {/* Hero shot — music vibe (creator picks the track in CapCut) */}
             <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5">
-              <h3 className="mb-2 text-sm font-semibold text-zinc-300">
-                Music Vibe
-              </h3>
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-zinc-300">
+                  Music Vibe
+                </h3>
+                {heroShotData.musicVibe && (
+                  <button
+                    onClick={() =>
+                      copyToClipboard(heroShotData.musicVibe, "music")
+                    }
+                    className="rounded-full border border-zinc-700 px-3 py-1 text-[11px] font-medium text-zinc-300 transition-colors hover:border-zinc-500 hover:text-white"
+                  >
+                    {copiedField === "music" ? "Copied" : "Copy"}
+                  </button>
+                )}
+              </div>
               <p className="text-sm text-zinc-200">
                 {heroShotData.musicVibe || "—"}
               </p>
               <p className="mt-2 text-[11px] text-zinc-500">
                 Use this as the search query in CapCut / Epidemic Sound /
                 Artlist. Cinematic reels work best with trending epic /
-                ambient / orchestral audio \u2014 silent video + music + text
+                ambient / orchestral audio — silent video + music + text
                 consistently outperforms AI narration.
               </p>
             </div>

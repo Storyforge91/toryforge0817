@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateHeroShotConcept } from "@/lib/ai/services/hero-shot.service";
+import { classifyError } from "@/lib/errors/classify";
 
 export const maxDuration = 60;
 
@@ -19,12 +20,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(concept);
   } catch (error) {
     console.error("Error generating hero shot concept:", error);
+    const classified = classifyError(error);
     return NextResponse.json(
       {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to generate hero shot",
+        error: classified.userMessage,
+        kind: classified.kind,
+        actionUrl: classified.actionUrl,
+        actionLabel: classified.actionLabel,
       },
       { status: 500 },
     );
