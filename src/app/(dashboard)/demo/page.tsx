@@ -115,7 +115,7 @@ export default function DemoPage() {
 
   // Mode toggle: cinematic episodes vs 2D comedy skits vs single hero-shot reel
   const [mode, setMode] = useState<"cinematic" | "skit" | "hero-shot">(
-    "cinematic",
+    "hero-shot",
   );
 
   // Hero Shot config
@@ -128,8 +128,9 @@ export default function DemoPage() {
   const [heroShotData, setHeroShotData] = useState<any>(null);
   const [heroImageUrl, setHeroImageUrl] = useState<string | null>(null);
   const [heroVideoUrl, setHeroVideoUrl] = useState<string | null>(null);
-  const [heroVoiceUrl, setHeroVoiceUrl] = useState<string | null>(null);
   const [heroProgress, setHeroProgress] = useState("");
+  // Locked Hero Shot duration — single-shot, 8s, 9:16. Series discipline.
+  const HERO_SHOT_DURATION_SECONDS = 8;
 
   // Cinematic config
   const [genre, setGenre] = useState("dark-motivation");
@@ -969,12 +970,7 @@ export default function DemoPage() {
     setHeroShotData(null);
     setHeroImageUrl(null);
     setHeroVideoUrl(null);
-    setHeroVoiceUrl(null);
     setHeroProgress("");
-    setVoiceProgress("");
-    setVoiceQuotaExceeded(false);
-    setBrowserVoicePlaying(false);
-    if (typeof window !== "undefined") window.speechSynthesis?.cancel();
 
     try {
       // Step 1 — generate the cinematic concept
@@ -1030,86 +1026,39 @@ export default function DemoPage() {
         setHeroImageUrl(imageUrl);
       }
 
-      // Step 3 — animate + narrate in parallel
+      // Step 3 — animate (no narration; hero shots ship silent + on-screen text)
       setStep("video");
-      setHeroProgress("Animating + narrating in parallel...");
+      setHeroProgress("Animating 8s cinematic shot...");
 
-      const duration = Math.max(
-        1,
-        Math.min(10, Number(concept.duration) || 6),
-      );
-
-      const videoPromise = (async () => {
-        try {
-          const vidRes = await fetch("/api/video/generate", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              imageUrl,
-              motionPrompt: concept.motionPrompt,
-              duration,
-              provider: "kling", // Kling is the strongest match for hero shots
-              animationStyle: "cinematic",
-              motionFluidity: "smooth",
-            }),
-          });
-          if (!vidRes.ok) {
-            const err = await vidRes.json().catch(() => ({}));
-            throw new Error(err.error || `Animation failed (HTTP ${vidRes.status})`);
-          }
-          const vidData = await vidRes.json();
-          if (vidData.videoUrl) {
-            setHeroVideoUrl(vidData.videoUrl);
-          }
-        } catch (err) {
-          console.error("Hero shot animation failed:", err);
-          setError(
-            err instanceof Error
-              ? `Animation: ${err.message}`
-              : "Animation failed",
-          );
+      try {
+        const vidRes = await fetch("/api/video/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            imageUrl,
+            motionPrompt: concept.motionPrompt,
+            duration: HERO_SHOT_DURATION_SECONDS,
+            provider: "kling", // Kling is the strongest match for hero shots
+            animationStyle: "cinematic",
+            motionFluidity: "smooth",
+          }),
+        });
+        if (!vidRes.ok) {
+          const err = await vidRes.json().catch(() => ({}));
+          throw new Error(err.error || `Animation failed (HTTP ${vidRes.status})`);
         }
-      })();
-
-      const voicePromise = (async () => {
-        const text = (concept.voiceScript || "").trim();
-        if (!text) return;
-        setVoiceProgress("Generating narration...");
-        try {
-          const voiceRes = await fetch("/api/voice/generate", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text }),
-          });
-          if (voiceRes.ok) {
-            const data = await voiceRes.json();
-            setHeroVoiceUrl(data.audioUrl);
-            setVoiceProgress("Voice ready");
-          } else {
-            let errDetail = `HTTP ${voiceRes.status}`;
-            let isQuotaError = false;
-            try {
-              const errBody = await voiceRes.json();
-              errDetail = errBody.error || errDetail;
-              isQuotaError = errBody.quotaExceeded === true;
-            } catch {
-              /* ignore */
-            }
-            if (isQuotaError) {
-              setVoiceQuotaExceeded(true);
-              setVoiceProgress("Quota exceeded \u2014 browser voice available");
-            } else {
-              setVoiceProgress(`Voice failed: ${errDetail}`);
-            }
-          }
-        } catch (err) {
-          setVoiceProgress(
-            `Voice failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
+        const vidData = await vidRes.json();
+        if (vidData.videoUrl) {
+          setHeroVideoUrl(vidData.videoUrl);
         }
-      })();
-
-      await Promise.allSettled([videoPromise, voicePromise]);
+      } catch (err) {
+        console.error("Hero shot animation failed:", err);
+        setError(
+          err instanceof Error
+            ? `Animation: ${err.message}`
+            : "Animation failed",
+        );
+      }
 
       setHeroProgress("");
       setStep("complete");
@@ -1125,26 +1074,9 @@ export default function DemoPage() {
     setHeroShotData(null);
     setHeroImageUrl(null);
     setHeroVideoUrl(null);
-    setHeroVoiceUrl(null);
     setHeroProgress("");
-    setVoiceQuotaExceeded(false);
-    setBrowserVoicePlaying(false);
-    if (typeof window !== "undefined") window.speechSynthesis?.cancel();
     setStep("idle");
     setError(null);
-  }
-
-  function playHeroBrowserVoice() {
-    if (!heroShotData?.voiceScript) return;
-    const text = String(heroShotData.voiceScript).trim();
-    if (!text) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.95;
-    utterance.onend = () => setBrowserVoicePlaying(false);
-    utterance.onerror = () => setBrowserVoicePlaying(false);
-    setBrowserVoicePlaying(true);
-    window.speechSynthesis.speak(utterance);
   }
 
   function handleNewSeries() {
@@ -2800,8 +2732,9 @@ export default function DemoPage() {
             </h2>
             <p className="mb-5 text-xs text-zinc-500">
               Single cinematic reel in the @mister_z / OpenArt aesthetic.
-              Scale contrast, atmospheric depth, dramatic camera, mythic narration.
-              Generates one shocking 5-10s clip.
+              Scale contrast, atmospheric depth, dramatic camera. Locked to
+              8 seconds, single shot, 9:16. Silent video + on-screen text +
+              music vibe (no AI narration).
             </p>
 
             <div className="grid gap-4 sm:grid-cols-2">
@@ -2813,7 +2746,7 @@ export default function DemoPage() {
                   value={heroScenarioSeed}
                   onChange={(e) => setHeroScenarioSeed(e.target.value)}
                   rows={3}
-                  placeholder='e.g. "A child standing on a cliff facing a god made of storm clouds with glowing eyes" \u2014 leave blank for AI to invent something fresh'
+                  placeholder='e.g. "A child standing on a cliff facing a god made of storm clouds with glowing eyes" — leave blank for AI to invent something fresh'
                   className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm text-white placeholder-zinc-600 outline-none focus:border-zinc-500"
                 />
               </div>
@@ -2927,9 +2860,11 @@ export default function DemoPage() {
               <h3 className="mt-3 text-2xl font-bold text-white">
                 {heroShotData.title}
               </h3>
-              <p className="mt-2 text-sm italic text-zinc-300">
-                &ldquo;{heroShotData.voiceScript}&rdquo;
-              </p>
+              {heroShotData.textOverlay && (
+                <p className="mt-2 text-sm italic text-zinc-300">
+                  &ldquo;{heroShotData.textOverlay}&rdquo;
+                </p>
+              )}
               <p className="mt-3 text-sm text-zinc-400">
                 {heroShotData.scenario}
               </p>
@@ -2987,49 +2922,35 @@ export default function DemoPage() {
               )}
             </div>
 
-            {/* Hero shot voice */}
+            {/* Hero shot — on-screen text overlay (CapCut-ready) */}
             <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5">
-              <h3 className="mb-3 text-sm font-semibold text-zinc-300">
-                Voice Narration
+              <h3 className="mb-2 text-sm font-semibold text-zinc-300">
+                On-Screen Text Overlay
               </h3>
-              {heroVoiceUrl ? (
-                <div>
-                  <audio src={heroVoiceUrl} controls className="w-full" />
-                  <a
-                    href={heroVoiceUrl}
-                    download={`${(heroShotData.title || "hero-shot").replace(/\s+/g, "-")}-narration.mp3`}
-                    className="mt-2 inline-block text-xs text-zinc-400 underline hover:text-white"
-                  >
-                    Download MP3
-                  </a>
-                </div>
-              ) : voiceQuotaExceeded ? (
-                <div>
-                  <div className="mb-3 rounded-lg border border-amber-800/50 bg-amber-950/30 p-3">
-                    <p className="text-xs text-amber-400">
-                      ElevenLabs quota exceeded. Browser voice is available as a free fallback.
-                    </p>
-                  </div>
-                  <button
-                    onClick={
-                      browserVoicePlaying
-                        ? stopBrowserVoice
-                        : playHeroBrowserVoice
-                    }
-                    className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-black hover:bg-zinc-200"
-                  >
-                    {browserVoicePlaying
-                      ? "Stop Playback"
-                      : "Play with Browser Voice"}
-                  </button>
-                </div>
-              ) : (
-                <p className="text-xs text-zinc-600">
-                  {isRunning
-                    ? "Generating narration..."
-                    : "Voice generation skipped or failed"}
-                </p>
-              )}
+              <p className="text-2xl font-bold text-white">
+                {heroShotData.textOverlay || "—"}
+              </p>
+              <p className="mt-2 text-[11px] text-zinc-500">
+                Drop this as a single big-font caption in CapCut. Cinematic
+                serif (e.g. Trajan, Cinzel) or condensed sans-serif. Center,
+                bottom-third.
+              </p>
+            </div>
+
+            {/* Hero shot \u2014 music vibe (creator picks the track in CapCut) */}
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5">
+              <h3 className="mb-2 text-sm font-semibold text-zinc-300">
+                Music Vibe
+              </h3>
+              <p className="text-sm text-zinc-200">
+                {heroShotData.musicVibe || "—"}
+              </p>
+              <p className="mt-2 text-[11px] text-zinc-500">
+                Use this as the search query in CapCut / Epidemic Sound /
+                Artlist. Cinematic reels work best with trending epic /
+                ambient / orchestral audio \u2014 silent video + music + text
+                consistently outperforms AI narration.
+              </p>
             </div>
 
             {/* Suggested caption */}
@@ -3038,7 +2959,7 @@ export default function DemoPage() {
                 Suggested Caption (Instagram / TikTok)
               </h3>
               <p className="text-sm italic text-zinc-200">
-                &ldquo;{heroShotData.voiceScript}&rdquo;
+                {heroShotData.textOverlay || heroShotData.scenario}
               </p>
               <p className="mt-3 text-xs text-zinc-400">
                 Comment <span className="font-mono text-violet-300">&ldquo;PROMPT&rdquo;</span> and I&apos;ll DM you the prompt that made this 👇

@@ -16,16 +16,7 @@ const navSections: NavSection[] = [
     label: "Create",
     items: [
       { href: "/", label: "Home", icon: "H" },
-      { href: "/demo", label: "Demo", icon: "D" },
-      { href: "/idea-studio", label: "Idea Studio", icon: "IS" },
-    ],
-  },
-  {
-    label: "Library",
-    items: [
-      { href: "/skits", label: "Skits", icon: "Sk" },
-      { href: "/storylines", label: "Storylines", icon: "S" },
-      { href: "/characters", label: "Characters", icon: "C" },
+      { href: "/demo", label: "Studio", icon: "St" },
     ],
   },
   {
@@ -86,7 +77,7 @@ export default function DashboardLayout({
             {settingsItem.label}
           </Link>
           <p className="px-1 text-[10px] text-zinc-600">
-            Phase 1 — Comedy Skit Engine
+            Hero Shot Reel Engine
           </p>
         </div>
       </aside>
