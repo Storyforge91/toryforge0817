@@ -19,8 +19,11 @@ export async function generateWithClaude<T>(
   const anthropic = getAnthropicClient();
 
   const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 16384,
+    // Latest Sonnet — same price as Sonnet 4, slightly better quality.
+    model: "claude-sonnet-4-6",
+    // Hero-shot JSON outputs are ~500-800 tokens; cap conservatively to
+    // prevent runaway billing if the model ever rambles.
+    max_tokens: 2048,
     system: systemPrompt,
     messages: [{ role: "user", content: userPrompt }],
   });
