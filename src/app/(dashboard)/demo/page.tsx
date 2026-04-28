@@ -201,27 +201,162 @@ export default function StudioPage() {
     }
   }
 
-  async function downloadVideo() {
-    if (!videoUrl) return;
-    const filename = `${(data?.title || "hero-shot")
+  function safeFilename(title?: string | null) {
+    return (title || "hero-shot")
       .toString()
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "")}.mp4`;
+      .replace(/^-|-$/g, "");
+  }
+
+  /**
+   * Build the human-readable sidecar that gets saved next to the MP4. Captures
+   * everything the creator needs in CapCut: text overlay, music vibe, caption,
+   * hashtags, full prompts, and the source image URL.
+   */
+  function buildMetadataText(): string {
+    if (!data) return "";
+    const lines: string[] = [];
+    lines.push(`# ${data.title}`);
+    lines.push("");
+    lines.push(`Scenario: ${data.scenario}`);
+    lines.push(`Duration: ${data.duration}s`);
+    lines.push("");
+    lines.push("## On-Screen Text Overlay");
+    lines.push(data.textOverlay || "—");
+    lines.push("");
+    lines.push("## Music Vibe");
+    lines.push(data.musicVibe || "—");
+    lines.push("");
+    if (Array.isArray(data.themeTags) && data.themeTags.length > 0) {
+      lines.push("## Hashtags");
+      lines.push(
+        data.themeTags
+          .map((t) => `#${t.replace(/^#/, "").replace(/\s+/g, "")}`)
+          .join(" ") + " #aiart #aianimation #cinematic #ai",
+      );
+      lines.push("");
+    }
+    if (Array.isArray(data.moodTags) && data.moodTags.length > 0) {
+      lines.push("## Mood Tags");
+      lines.push(data.moodTags.join(", "));
+      lines.push("");
+    }
+    lines.push("## Image Prompt");
+    lines.push(data.imagePrompt);
+    lines.push("");
+    lines.push("## Motion Prompt");
+    lines.push(data.motionPrompt);
+    lines.push("");
+    if (imageUrl) {
+      lines.push("## Source Image URL");
+      lines.push(imageUrl);
+      lines.push("");
+    }
+    if (videoUrl) {
+      lines.push("## Source Video URL (expires)");
+      lines.push(videoUrl);
+      lines.push("");
+    }
+    lines.push(`Generated: ${new Date().toISOString()}`);
+    return lines.join("\n");
+  }
+
+  function triggerBlobDownload(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function downloadVideo() {
+    if (!videoUrl) return;
+    const filename = `${safeFilename(data?.title)}.mp4`;
     try {
       const res = await fetch(videoUrl);
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      triggerBlobDownload(blob, filename);
     } catch {
       window.open(videoUrl, "_blank", "noopener");
     }
+  }
+
+  /**
+   * Save the full bundle (MP4 + metadata.txt) to a folder of the user's choice.
+   *
+   * On Chromium-based browsers the File System Access API lets the user pick a
+   * directory and we write directly into it. On Safari / Firefox / older
+   * browsers we fall back to two regular downloads (the user's default
+   * Downloads folder).
+   */
+  async function saveBundle() {
+    if (!data || !videoUrl) return;
+    const base = safeFilename(data.title);
+    const videoFilename = `${base}.mp4`;
+    const metaFilename = `${base}.txt`;
+    const metadataText = buildMetadataText();
+
+    let videoBlob: Blob;
+    try {
+      const res = await fetch(videoUrl);
+      videoBlob = await res.blob();
+    } catch {
+      // Couldn't fetch the video (CORS or network). Fall back to opening it
+      // in a new tab so the user can save it manually, then download metadata.
+      window.open(videoUrl, "_blank", "noopener");
+      triggerBlobDownload(
+        new Blob([metadataText], { type: "text/plain" }),
+        metaFilename,
+      );
+      return;
+    }
+
+    // Modern path: File System Access API — directory picker.
+    const w = window as unknown as {
+      showDirectoryPicker?: (opts?: {
+        mode?: "read" | "readwrite";
+      }) => Promise<FileSystemDirectoryHandle>;
+    };
+    if (typeof w.showDirectoryPicker === "function") {
+      try {
+        const dirHandle = await w.showDirectoryPicker({ mode: "readwrite" });
+
+        const videoHandle = await dirHandle.getFileHandle(videoFilename, {
+          create: true,
+        });
+        const videoWriter = await videoHandle.createWritable();
+        await videoWriter.write(videoBlob);
+        await videoWriter.close();
+
+        const metaHandle = await dirHandle.getFileHandle(metaFilename, {
+          create: true,
+        });
+        const metaWriter = await metaHandle.createWritable();
+        await metaWriter.write(metadataText);
+        await metaWriter.close();
+        return;
+      } catch (err) {
+        // User cancelled the picker — silently bail. Anything else, fall
+        // through to the dual-download fallback so they still get the files.
+        if (
+          err instanceof DOMException &&
+          (err.name === "AbortError" || err.name === "NotAllowedError")
+        ) {
+          return;
+        }
+      }
+    }
+
+    // Fallback: two regular downloads to the default Downloads folder.
+    triggerBlobDownload(videoBlob, videoFilename);
+    triggerBlobDownload(
+      new Blob([metadataText], { type: "text/plain" }),
+      metaFilename,
+    );
   }
 
   return (
@@ -435,15 +570,25 @@ export default function StudioPage() {
               </div>
               {videoUrl && (
                 <div className="mt-4 flex flex-col items-center gap-2">
-                  <button
-                    onClick={downloadVideo}
-                    className="rounded-full bg-white px-6 py-2 text-xs font-bold text-black transition-colors hover:bg-zinc-200"
-                  >
-                    Download Video (MP4)
-                  </button>
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    <button
+                      onClick={downloadVideo}
+                      className="rounded-full bg-white px-6 py-2 text-xs font-bold text-black transition-colors hover:bg-zinc-200"
+                    >
+                      Download Video (MP4)
+                    </button>
+                    <button
+                      onClick={saveBundle}
+                      className="rounded-full border border-fuchsia-700 bg-fuchsia-950/30 px-6 py-2 text-xs font-bold text-fuchsia-200 transition-colors hover:border-fuchsia-500 hover:text-white"
+                    >
+                      Save to Folder…
+                    </button>
+                  </div>
                   <p className="text-[11px] text-zinc-500">
-                    Or right-click the video and choose &ldquo;Save Video
-                    As&rdquo;.
+                    &ldquo;Save to Folder&rdquo; writes the MP4 + a
+                    metadata .txt (caption, hashtags, prompts, music vibe)
+                    into a folder you pick. Chrome / Edge only — Safari
+                    falls back to two downloads.
                   </p>
                 </div>
               )}
