@@ -16,6 +16,7 @@ const navSections: NavSection[] = [
     label: "Create",
     items: [
       { href: "/", label: "Home", icon: "H" },
+      { href: "/quotes", label: "Quotes", icon: "Qt" },
       { href: "/demo", label: "Studio", icon: "St" },
       { href: "/references", label: "References", icon: "Re" },
     ],
